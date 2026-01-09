@@ -1,0 +1,15 @@
+#path: F:/my_code/datasets # dataset root dir
+#path: F:/my_code/testdatasets # dataset root dir
+#path: D:/Git/yolov12_fuse_SA/ultralytics/testdatasets
+#path: D:/yolodatasets/datasets
+#path: D:/yolodatasets/TransmissionTower/datasets
+path: F:/my_code/WindFarm/datasets_2m
+#path: D:/yolodatasets/datasets
+train: images/train # train images (relative to 'path') 128 images
+val: images/val # val images (relative to 'path') 128 images
+#test: images/test # test images (optional)
+
+# Classes
+nc: 1
+names:
+  0: WindTurbine
