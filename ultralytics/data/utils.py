@@ -15,6 +15,7 @@ from tarfile import is_tarfile
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+from osgeo import gdal
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.utils import (
@@ -40,6 +41,114 @@ IMG_FORMATS = {"bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp",
 VID_FORMATS = {"asf", "avi", "gif", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "wmv", "webm"}  # video suffixes
 PIN_MEMORY = str(os.getenv("PIN_MEMORY", True)).lower() == "true"  # global pin_memory for dataloaders
 FORMATS_HELP_MSG = f"Supported formats are:\nimages: {IMG_FORMATS}\nvideos: {VID_FORMATS}"
+
+def read_image(path, mode, **kwargs):
+    """
+    mode="tif"  : 读取tif文件
+    mode="npy"  : 读取npy文件
+    mode="img"  : 读取普通图像(jpg/png等)
+    """
+    '''
+    Args:
+        path: 图像路径
+        mode: 读取模式，tif/npy/img
+        **kwargs: 其他参数
+    '''
+    '''bands: 波段数默认为加载3波段图像'''
+    bands = kwargs.get("bands", 4)
+
+    if mode == "tif":
+        if path.lower().endswith(".tif"):
+            im_width, im_height, im_bands, projection, geotrans, im0 = readTif(path, bands)
+        return im0
+
+    elif mode == "npy":
+        if path.lower().endswith(".npy"):
+            im0 = np.load(path.replace(".tif", ".npy"))
+        return im0
+
+    elif mode == "img":
+        im0 = cv2.imread(path)  # BGR
+        return im0
+
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+
+def normalize_percentile(img_array):
+    """
+    分波段 2% 线性拉伸 - 专为 YOLO-PI 物理特征设计
+    """
+    bands, h, w = img_array.shape
+    out_img = np.zeros_like(img_array, dtype=np.uint8)
+
+    # 将数据转为 float32 进行计算，避免溢出
+    img_float = img_array.astype(np.float32)
+
+    for i in range(bands):
+        band = img_float[i, :, :]
+
+        # 1. 计算 2% 和 98% 分位点 (剔除异常值)
+        # 这种方法会自动忽略极亮(云)和极暗(阴影)的噪点
+        p2 = np.percentile(band, 2)
+        p98 = np.percentile(band, 98)
+
+        # 2. 拉伸计算
+        # 将 [p2, p98] 映射到 [0, 255]
+        if p98 - p2 == 0:
+            out_img[i, :, :] = 0
+        else:
+            scale = 255.0 / (p98 - p2)
+            band_scaled = (band - p2) * scale
+
+            # 3. 截断并转为 uint8
+            band_clipped = np.clip(band_scaled, 0, 255)
+            out_img[i, :, :] = band_clipped.astype(np.uint8)
+
+    return out_img
+
+
+def readTif(img_file_path, bands=3):
+    """
+    读取栅格数据，将其转换成对应数组
+    img_file_path: 栅格数据路径
+    :return: 返回投影，几何信息，和转换后的数组
+    """
+    dataset = gdal.Open(img_file_path)  # 读取栅格数据
+    # 判断是否读取到数据
+    if dataset is None:
+        raise FileNotFoundError(f"Unable to open {img_file_path}")
+    projection = dataset.GetProjection()  # 投影
+    geotrans = dataset.GetGeoTransform()  # 几何信息
+    im_width = dataset.RasterXSize  # 栅格矩阵的列数
+    im_height = dataset.RasterYSize  # 栅格矩阵的行数
+    im_bands = dataset.RasterCount  # 波段数
+    # print(im_bands)
+    # 直接读取dataset
+    img_array = dataset.ReadAsArray().astype(np.float32)
+    if img_array is None:
+        raise ValueError(f"ReadAsArray failed for {img_file_path}")
+    # 归一化
+    if im_bands == 1:
+        img_array = np.tile(img_array, (3, 1, 1))
+    if bands == 3 and im_bands >= 3:
+        img_array = img_array[:3, :, :].copy()  # 取R G B三个波段
+        im_bands = 3
+    elif im_bands >= 4 and bands == 4:
+        img_array = img_array[:4, :, :].copy()
+        im_bands = 4
+
+    # --- 【关键修改】使用 2% 拉伸替代 Min-Max ---
+    # 这一步能显著增强金属目标的 Intensity 特征
+    img = normalize_percentile(img_array)
+    '''校正后处理'''
+    # imgScale = (img_array - np.min(img_array)) / (np.max(img_array) - np.min(img_array))
+    #
+    # img = np.round(imgScale * 255).astype(np.uint8)
+    # # TIS GIU 使用
+    img = np.transpose(img, (1, 2, 0))
+    # img = histEqualize(img)
+    return im_width, im_height, im_bands, projection, geotrans, img
 
 
 def img2label_paths(img_paths):
@@ -75,19 +184,15 @@ def verify_image(args):
     # Number (found, corrupt), message
     nf, nc, msg = 0, 0, ""
     try:
-        im = Image.open(im_file)
-        im.verify()  # PIL verify
-        shape = exif_size(im)  # image size
-        shape = (shape[1], shape[0])  # hw
-        assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
-        assert im.format.lower() in IMG_FORMATS, f"Invalid image format {im.format}. {FORMATS_HELP_MSG}"
-        if im.format.lower() in {"jpg", "jpeg"}:
-            with open(im_file, "rb") as f:
-                f.seek(-2, 2)
-                if f.read() != b"\xff\xd9":  # corrupt JPEG
-                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
-                    msg = f"{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved"
-        nf = 1
+        ''' 更改读取方式'''
+        if im_file.lower().endswith(".npy"):
+            im = read_image(im_file, 'npy')
+        elif im_file.lower().endswith("tif"):
+            im = read_image(im_file, 'tif')
+        else:
+            im = Image.open(im_file)
+        # shape = exif_size(im)  # image size
+        shape = (im.shape[1], im.shape[0])  # hw
     except Exception as e:
         nc = 1
         msg = f"{prefix}WARNING ⚠️ {im_file}: ignoring corrupt image/label: {e}"
@@ -101,18 +206,15 @@ def verify_image_label(args):
     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
     try:
         # Verify images
-        im = Image.open(im_file)
-        im.verify()  # PIL verify
-        shape = exif_size(im)  # image size
-        shape = (shape[1], shape[0])  # hw
-        assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
-        assert im.format.lower() in IMG_FORMATS, f"invalid image format {im.format}. {FORMATS_HELP_MSG}"
-        if im.format.lower() in {"jpg", "jpeg"}:
-            with open(im_file, "rb") as f:
-                f.seek(-2, 2)
-                if f.read() != b"\xff\xd9":  # corrupt JPEG
-                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
-                    msg = f"{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved"
+        ''' 更改读取方式'''
+        if im_file.lower().endswith(".npy"):
+            im = read_image(im_file, 'npy')
+        elif im_file.lower().endswith("tif"):
+            im = read_image(im_file, 'tif')
+        else:
+            im = Image.open(im_file)
+        # shape = exif_size(im)  # image size
+        shape = (im.shape[1], im.shape[0])  # hw
 
         # Verify labels
         if os.path.isfile(lb_file):

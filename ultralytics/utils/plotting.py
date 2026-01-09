@@ -113,6 +113,8 @@ class Annotator:
 
     def __init__(self, im, line_width=None, font_size=None, font="Arial.ttf", pil=False, example="abc"):
         """Initialize the Annotator class with image and line width along with color palette for keypoints and limbs."""
+        # 截取原始图像前三个通道数
+        im = np.ascontiguousarray(im[..., :3])
         non_ascii = not is_ascii(example)  # non-latin labels, i.e. asian, arabic, cyrillic
         input_is_pil = isinstance(im, Image.Image)
         self.pil = pil or non_ascii or input_is_pil
@@ -961,6 +963,8 @@ def plot_images(
         This function supports both tensor and numpy array inputs. It will automatically
         convert tensor inputs to numpy arrays for processing.
     """
+    '''绘制图像只用前三个波段'''
+    images = images[:, :3, ...]
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
     if isinstance(cls, torch.Tensor):

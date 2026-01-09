@@ -14,7 +14,7 @@ import numpy as np
 import psutil
 from torch.utils.data import Dataset
 
-from ultralytics.data.utils import FORMATS_HELP_MSG, HELP_URL, IMG_FORMATS
+from ultralytics.data.utils import FORMATS_HELP_MSG, HELP_URL, IMG_FORMATS, read_image
 from ultralytics.utils import DEFAULT_CFG, LOCAL_RANK, LOGGER, NUM_THREADS, TQDM
 
 
@@ -95,6 +95,7 @@ class BaseDataset(Dataset):
 
         # Transforms
         self.transforms = self.build_transforms(hyp=hyp)
+        self.mode = "tif"
 
     def get_img_files(self, img_path):
         """Read image files."""
@@ -145,7 +146,7 @@ class BaseDataset(Dataset):
         """Loads 1 image from dataset index 'i', returns (im, resized hw)."""
         im, f, fn = self.ims[i], self.im_files[i], self.npy_files[i]
         if im is None:  # not cached in RAM
-            if fn.exists():  # load npy
+            if fn.exists() and self.mode == "npy":  # load npy
                 try:
                     im = np.load(fn)
                 except Exception as e:
@@ -153,7 +154,8 @@ class BaseDataset(Dataset):
                     Path(fn).unlink(missing_ok=True)
                     im = cv2.imread(f)  # BGR
             else:  # read image
-                im = cv2.imread(f)  # BGR
+                # im = cv2.imread(f)  # BGR
+                im = read_image(f, "tif")
             if im is None:
                 raise FileNotFoundError(f"Image Not Found {f}")
 

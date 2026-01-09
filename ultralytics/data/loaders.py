@@ -15,7 +15,7 @@ import requests
 import torch
 from PIL import Image
 
-from ultralytics.data.utils import FORMATS_HELP_MSG, IMG_FORMATS, VID_FORMATS
+from ultralytics.data.utils import FORMATS_HELP_MSG, IMG_FORMATS, VID_FORMATS, read_image
 from ultralytics.utils import IS_COLAB, IS_KAGGLE, LOGGER, ops
 from ultralytics.utils.checks import check_requirements
 
@@ -360,7 +360,8 @@ class LoadImagesAndVideos:
                         self._new_video(self.files[self.count])
             else:
                 self.mode = "image"
-                im0 = cv2.imread(path)  # BGR
+                # im0 = cv2.imread(path)  # BGR
+                im0 = read_image(path, "tif")
                 if im0 is None:
                     LOGGER.warning(f"WARNING ⚠️ Image Read Error {path}")
                 else:
